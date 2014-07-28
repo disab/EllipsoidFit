@@ -42,6 +42,8 @@ public class FitPoints
 
 	public double[] evals;
 	
+	private boolean bCenterIsSet = false;
+	
 	/**
 	 * Fit points to the polynomial expression Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz
 	 * + 2Fyz + 2Gx + 2Hy + 2Iz = 1 and determine the center and radii of the
@@ -52,19 +54,46 @@ public class FitPoints
 	 */
 	public void fitEllipsoid(ArrayList<ThreeSpacePoint> points)
 	{
-		// Fit the points to Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz
-		// + 2Fyz + 2Gx + 2Hy + 2Iz = 1 and solve the system.
-		// v = (( d' * d )^-1) * ( d' * ones.mapAddToSelf(1));
-		RealVector v = solveSystem(points);
+		RealMatrix r; // for the algebraic form of the ellipsoid
+		
+		// check if center was set via setCenter
+		if ( bCenterIsSet)
+		{
+			// shift all points such that they are centered around [0,0,0]
+			ArrayList<ThreeSpacePoint> pointsCentered = new ArrayList<ThreeSpacePoint>();
+			for (int i = 0; i < points.size(); i++)
+			{
+				ThreeSpacePoint p = new ThreeSpacePoint(
+						points.get(i).x - center.getEntry(0),
+						points.get(i).y - center.getEntry(1),
+						points.get(i).z - center.getEntry(2) );
+				pointsCentered.add(p);
+			}
+			
+			// Fit the points to Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz
+			// + 2Fyz = 1 (with G = H = I = 0) and solve the system.
+			// v = (( d' * d )^-1) * ( d' * ones.mapAddToSelf(1));
+			RealVector v = solveSystemCentered(pointsCentered);
 
-		// Form the algebraic form of the ellipsoid.
-		RealMatrix a = formAlgebraicMatrix(v);
+			// Form the algebraic form of the ellipsoid.
+			r = formAlgebraicMatrix(v);
+		}
+		else
+		{
+			// Fit the points to Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz
+			// + 2Fyz + 2Gx + 2Hy + 2Iz = 1 and solve the system.
+			// v = (( d' * d )^-1) * ( d' * ones.mapAddToSelf(1));
+			RealVector v = solveSystem(points);
 
-		// Find the center of the ellipsoid.
-		center = findCenter(a);
+			// Form the algebraic form of the ellipsoid.
+			RealMatrix a = formAlgebraicMatrix(v);
 
-		// Translate the algebraic form of the ellipsoid to the center.
-		RealMatrix r = translateToCenter(center, a);
+			// Find the center of the ellipsoid.
+			center = findCenter(a);
+
+			// Translate the algebraic form of the ellipsoid to the center.
+			r = translateToCenter(center, a);
+		}
 
 		// Generate a submatrix of r.
 		RealMatrix subr = r.getSubMatrix(0, 2, 0, 2);
@@ -89,7 +118,25 @@ public class FitPoints
 		// Find the radii of the ellipsoid.
 		radii = findRadii(evals);
 	}
-
+	
+	/**
+	 * Manually set the center of the ellipsoid, reducing the number of unknowns
+	 * for the fit by three.
+	 * 
+	 * @param x the point of the center on the x-axis
+	 * @param y the point of the center on the y-axis
+	 * @param z the point of the center on the z-axis
+	 */
+	public void setCenter(double x, double y, double z)
+	{
+		center = new ArrayRealVector(3);
+		center.setEntry(0, x);
+		center.setEntry(1, y);
+		center.setEntry(2, z);
+		
+		bCenterIsSet = true;
+	}
+	
 	/**
 	 * Solve the polynomial expression Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz + 2Fyz +
 	 * 2Gx + 2Hy + 2Iz from the provided points.
@@ -154,6 +201,69 @@ public class FitPoints
 		RealVector v = dtdi.operate(dtOnes);
 
 		return v;
+	}
+	
+	/**
+	 * Solve the polynomial expression Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz + 2Fyz
+	 * (with G = H = I = 0) from the provided points.
+	 * This expression describes an ellipsoid centered at [0,0,0].
+	 * 
+	 * @param points
+	 *            the points that will be fit to the polynomial expression,
+	 *            should be centered around [0,0,0].
+	 * @return the solution vector to the polynomial expression, containing also G = H = I = 0.
+	 */
+	private RealVector solveSystemCentered(ArrayList<ThreeSpacePoint> points)
+	{
+		// determine the number of points
+		int numPoints = points.size();
+
+		// the design matrix
+		// size: numPoints x 6
+		RealMatrix d = new Array2DRowRealMatrix(numPoints, 6);
+
+		// Fit the ellipsoid in the form of
+		// Ax^2 + By^2 + Cz^2 + 2Dxy + 2Exz + 2Fyz
+		for (int i = 0; i < d.getRowDimension(); i++)
+		{
+			double xx = Math.pow(points.get(i).x, 2);
+			double yy = Math.pow(points.get(i).y, 2);
+			double zz = Math.pow(points.get(i).z, 2);
+			double xy = 2 * (points.get(i).x * points.get(i).y);
+			double xz = 2 * (points.get(i).x * points.get(i).z);
+			double yz = 2 * (points.get(i).y * points.get(i).z);
+
+			d.setEntry(i, 0, xx);
+			d.setEntry(i, 1, yy);
+			d.setEntry(i, 2, zz);
+			d.setEntry(i, 3, xy);
+			d.setEntry(i, 4, xz);
+			d.setEntry(i, 5, yz);
+		}
+
+		// solve the normal system of equations
+		// v = (( d' * d )^-1) * ( d' * ones.mapAddToSelf(1));
+
+		// Multiply: d' * d
+		RealMatrix dtd = d.transpose().multiply(d);
+
+		// Create a vector of ones.
+		RealVector ones = new ArrayRealVector(numPoints);
+		ones.mapAddToSelf(1);
+
+		// Multiply: d' * ones.mapAddToSelf(1)
+		RealVector dtOnes = d.transpose().operate(ones);
+
+		// Find ( d' * d )^-1
+		DecompositionSolver solver = new SingularValueDecomposition(dtd)
+				.getSolver();
+		RealMatrix dtdi = solver.getInverse();
+
+		// v = (( d' * d )^-1) * ( d' * ones.mapAddToSelf(1));
+		RealVector v = dtdi.operate(dtOnes);
+
+		// add G = H = I = 0 to the vector polynomial
+		return v.append(0.0).append(0.0).append(0.0);
 	}
 
 	/**
